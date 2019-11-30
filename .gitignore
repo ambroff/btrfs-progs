@@ -96,3 +96,5 @@
 /Documentation/mkfs.btrfs.8
 
 *.patch
+
+/compile_commands.json
