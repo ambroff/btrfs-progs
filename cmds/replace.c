@@ -134,7 +134,7 @@ static int cmd_replace_start(const struct cmd_struct *cmd,
 	u64 dstdev_block_count;
 	int do_not_background = 0;
 	DIR *dirstream = NULL;
-	u64 srcdev_size;
+	u64 srcdev_used_bytes;
 	u64 dstdev_size;
 
 	optind = 0;
@@ -224,7 +224,7 @@ static int cmd_replace_start(const struct cmd_struct *cmd,
 		for (i = 0; i < fi_args.num_devices; i++)
 			if (start_args.start.srcdevid == di_args[i].devid)
 				break;
-		srcdev_size = di_args[i].total_bytes;
+		srcdev_used_bytes = di_args[i].bytes_used;
 		free(di_args);
 		if (i == fi_args.num_devices) {
 			error("'%s' is not a valid devid for filesystem '%s'",
@@ -232,10 +232,35 @@ static int cmd_replace_start(const struct cmd_struct *cmd,
 			goto leave_with_error;
 		}
 	} else if (path_is_block_device(srcdev) > 0) {
+		struct btrfs_ioctl_fs_info_args fi_args;
+		struct btrfs_ioctl_dev_info_args *di_args = NULL;
+
+		start_args.start.srcdevid = 0;
 		strncpy((char *)start_args.start.srcdev_name, srcdev,
 			BTRFS_DEVICE_PATH_NAME_MAX);
-		start_args.start.srcdevid = 0;
-		srcdev_size = get_partition_size(srcdev);
+
+		ret = get_fs_info(path, &fi_args, &di_args);
+		if (ret) {
+			errno = -ret;
+			error("failed to get device info: %m");
+			free(di_args);
+			goto leave_with_error;
+		}
+		if (!fi_args.num_devices) {
+			error("no devices found");
+			free(di_args);
+			goto leave_with_error;
+		}
+
+		for (i = 0; i < fi_args.num_devices; i++) {
+			if (!strncmp((char *)start_args.start.srcdev_name, (char *)di_args[i].path,
+					BTRFS_DEVICE_PATH_NAME_MAX)) {
+				break;
+			}
+		}
+
+		srcdev_used_bytes = di_args[i].bytes_used;
+		free(di_args);
 	} else {
 		error("source device must be a block device or a devid");
 		goto leave_with_error;
@@ -246,9 +271,9 @@ static int cmd_replace_start(const struct cmd_struct *cmd,
 		goto leave_with_error;
 
 	dstdev_size = get_partition_size(dstdev);
-	if (srcdev_size > dstdev_size) {
-		error("target device smaller than source device (required %llu bytes)",
-			srcdev_size);
+	if (srcdev_used_bytes > dstdev_size) {
+		error("target device is too small to store the data from source device (required %llu bytes)",
+			srcdev_used_bytes);
 		goto leave_with_error;
 	}
 
